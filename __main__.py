@@ -167,28 +167,36 @@ def parse_program(src: str) -> List[Stmt]:
     stmts = []
     i = 0
     while i < len(lines):
-        line = lines[i]
-        # Detect start of multiline py( or sh( block
-        if (line.startswith('py(') or line.startswith('sh(')) and not line.endswith(')'):
-            cmd = 'py' if line.startswith('py(') else 'sh'
-            code_lines = [line[line.index('(')+1:]]
+        line = lines[i].strip()
+
+        # Handle multiline Python block
+        if line == 'py(':
             i += 1
-            while i < len(lines) and not lines[i].endswith(')'):
+            code_lines = []
+            while i < len(lines) and lines[i].strip() != ')py':
                 code_lines.append(lines[i])
                 i += 1
-            if i < len(lines):
-                code_lines.append(lines[i][:-1])
-            code_block = '\n'.join(code_lines).strip()
-            if cmd == 'py':
-                stmts.append(PythonExec(code_block))
-            else:
-                stmts.append(Shell(code_block))
-            i += 1
+            stmts.append(PythonExec('\n'.join(code_lines)))
+            i += 1  # Skip the closing )py
             continue
+
+        # Handle multiline Shell block
+        if line == 'sh(':
+            i += 1
+            code_lines = []
+            while i < len(lines) and lines[i].strip() != ')sh':
+                code_lines.append(lines[i])
+                i += 1
+            stmts.append(Shell('\n'.join(code_lines)))
+            i += 1  # Skip the closing )sh
+            continue
+
+        # Handle regular statements (including inline py/sh/var/etc.)
         parts = [part.strip() for part in line.split(';') if part.strip()]
         for part in parts:
             stmts.append(parse_stmt(part))
         i += 1
+
     return stmts
 
 # ===== Type Checker =====

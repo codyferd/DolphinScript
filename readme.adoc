@@ -1,6 +1,6 @@
 = DolphinScript
 
 = Idea
-DolphinScript is a statically typed, type-safe, garbage-collected, open source, memory-safe, rust-based, interpreted programming language that is designed to be quick and easy to use. Static typing and type safety make sure that errors will be caught, and gives more flexibility with types. Also, here's the Hello World statement.
+DolphinScript is a statically typed, type-safe, garbage-collected, open source, memory-safe, interpreted programming language that compiles to python, and is designed to be quick and easy to use. Static typing and type safety make sure that errors will be caught, and gives more flexibility with types. Also, here's the Hello World statement.
 
 print("Hello World")

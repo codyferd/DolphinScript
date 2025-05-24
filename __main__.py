@@ -35,6 +35,10 @@ class Literal(Expr):
 class VarRef(Expr):
     def __init__(self, name: str): self.name = name
 
+class TypedExpr(Expr):
+    def __init__(self, typ: str, expr: Expr):
+        self.typ = typ
+        self.expr = expr
 class BinOp(Expr):
     def __init__(self, left: Expr, op: str, right: Expr):
         self.left, self.op, self.right = left, op, right
@@ -85,6 +89,12 @@ def tokenize(line: str) -> List[str]:
 # ===== Parser =====
 def parse_expr(s: str) -> Expr:
     s = s.strip()
+    # Detect type annotation: e.g. str:"Hello"
+    if ':' in s and not s.startswith('"') and not s[0].isdigit():
+        typ, rest = s.split(':', 1)
+        if typ in (Type.INT, Type.FLOAT, Type.BOOL, Type.STR, Type.LIST):
+            return TypedExpr(typ, parse_expr(rest.strip()))
+    # existing parsing follows
     if s.startswith('"') and s.endswith('"'):
         return Literal(Value(s[1:-1]))
     if s.isdigit(): return Literal(Value(int(s)))
@@ -101,12 +111,18 @@ def parse_expr(s: str) -> Expr:
     return VarRef(s)
 
 def parse_stmt(line: str) -> Stmt:
-    if line in ('exit', 'quit'): return Exit()
-    if line == 'clear': return Clear()
-    if line == 'help': return Help()
-    if line.startswith('chsh '): return SetShell(line[5:].strip())
-    if line.startswith('sh '): return Shell(line[3:].strip())
-    if line.startswith('py '): return PythonExec(line[3:].strip())
+    if line in ('exit', 'quit'): 
+        return Exit()
+    if line == 'clear': 
+        return Clear()
+    if line == 'help': 
+        return Help()
+    if line.startswith('chsh '): 
+        return SetShell(line[5:].strip())
+    if line.startswith('sh '): 
+        return Shell(line[3:].strip())
+    if line.startswith('py '): 
+        return PythonExec(line[3:].strip())
     if line.startswith('var '):
         _, rest = line.split('var ', 1)
         name_type, expr = rest.split('=', 1)
@@ -128,6 +144,12 @@ def parse_program(src: str) -> List[Stmt]:
 
 # ===== Type Checker =====
 def type_check_expr(e: Expr, ctx: Context) -> str:
+    if isinstance(e, TypedExpr):
+        t = e.typ
+        expr_t = type_check_expr(e.expr, ctx)
+        if t != expr_t:
+            raise TypeError(f"Type annotation {t} does not match expression type {expr_t}")
+        return t
     if isinstance(e, Literal): return e.value.get_type()
     if isinstance(e, VarRef): return ctx.types.get(e.name, Type.VOID)
     if isinstance(e, BinOp):
@@ -135,6 +157,9 @@ def type_check_expr(e: Expr, ctx: Context) -> str:
         rt = type_check_expr(e.right, ctx)
         if lt != rt: raise TypeError(f"Type mismatch {lt} {e.op} {rt}")
         return lt
+    if isinstance(e, Call):
+        # optionally check return type of call
+        return Type.VOID
     return Type.VOID
 
 def type_check_stmt(s: Stmt, ctx: Context):

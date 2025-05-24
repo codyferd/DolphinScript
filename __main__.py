@@ -1,153 +1,206 @@
 import sys
 import os
 import subprocess
+from typing import Any, Dict, List, Tuple
 
+# ===== Types =====
 class Type:
-    INT = 'Int'
-    FLOAT = 'Float'
-    BOOL = 'Bool'
-    STR = 'Str'
-    LIST = lambda inner: f'List[{inner}]'
-    VOID = 'Void'
-    FUNC = lambda args, ret: f'Func({args})->{ret}'
+    INT = 'int'
+    FLOAT = 'float'
+    BOOL = 'bool'
+    STR = 'str'
+    LIST = 'list'
+    VOID = 'void'
 
+# ===== Value =====
 class Value:
-    def __init__(self, value):
+    def __init__(self, value: Any):
         self.value = value
 
-    def get_type(self):
-        if isinstance(self.value, int):
-            return Type.INT
-        elif isinstance(self.value, float):
-            return Type.FLOAT
-        elif isinstance(self.value, bool):
-            return Type.BOOL
-        elif isinstance(self.value, str):
-            return Type.STR
-        elif isinstance(self.value, list):
-            return Type.LIST(self.value[0].get_type()) if self.value else Type.LIST(Type.VOID)
+    def get_type(self) -> str:
+        if isinstance(self.value, bool): return Type.BOOL
+        if isinstance(self.value, int): return Type.INT
+        if isinstance(self.value, float): return Type.FLOAT
+        if isinstance(self.value, str): return Type.STR
+        if isinstance(self.value, list): return Type.LIST
         return Type.VOID
 
-    def __str__(self):
-        return "[" + ", ".join(str(v) for v in self.value) + "]" if isinstance(self.value, list) else str(self.value)
+# ===== AST Nodes =====
+class Expr: pass
+class Stmt: pass
 
-class Expr:
-    def __init__(self, kind, **kwargs):
-        self.kind = kind
-        self.__dict__.update(kwargs)
+class Literal(Expr):
+    def __init__(self, value: Value): self.value = value
 
-class Stmt:
-    def __init__(self, kind, **kwargs):
-        self.kind = kind
-        self.__dict__.update(kwargs)
+class VarRef(Expr):
+    def __init__(self, name: str): self.name = name
 
+class BinOp(Expr):
+    def __init__(self, left: Expr, op: str, right: Expr):
+        self.left, self.op, self.right = left, op, right
+
+class Call(Expr):
+    def __init__(self, name: str, args: List[Expr]): self.name, self.args = name, args
+
+class VarDef(Stmt):
+    def __init__(self, name: str, typ: str, expr: Expr):
+        self.name, self.typ, self.expr = name, typ, expr
+
+class Print(Stmt):
+    def __init__(self, exprs: List[Expr]): self.exprs = exprs
+
+class Shell(Stmt):
+    def __init__(self, command: str): self.command = command
+
+class SetShell(Stmt):
+    def __init__(self, shell: str): self.shell = shell
+
+class PythonExec(Stmt):
+    def __init__(self, code: str): self.code = code
+
+class Exit(Stmt): pass
+class Clear(Stmt): pass
+class Help(Stmt): pass
+class ExprStmt(Stmt):
+    def __init__(self, expr: Expr): self.expr = expr
+
+# ===== Context =====
 class Context:
     def __init__(self):
-        self.vars = {}
-        self.types = {}
-        self.funcs = {}
-        self.shell = '/bin/sh'
+        self.vars: Dict[str, Value] = {}
+        self.types: Dict[str, str] = {}
+        self.shell: str = '/bin/sh'
 
-def tokenize(s):
+# ===== Tokenizer =====
+def tokenize(line: str) -> List[str]:
     toks, cur, in_str = [], '', False
-    for c in s:
-        if c == '"':
-            in_str = not in_str
-            cur += c
+    for c in line:
+        if c == '"': in_str = not in_str; cur += c
         elif c.isspace() and not in_str:
-            if cur:
-                toks.append(cur)
-                cur = ''
-        else:
-            cur += c
-    if cur:
-        toks.append(cur)
+            if cur: toks.append(cur); cur = ''
+        else: cur += c
+    if cur: toks.append(cur)
     return toks
 
-def parse_type(s):
-    return {
-        'int': Type.INT, 'float': Type.FLOAT,
-        'bool': Type.BOOL, 'str': Type.STR,
-        'void': Type.VOID,
-    }.get(s, Type.VOID)
+# ===== Parser =====
+def parse_expr(s: str) -> Expr:
+    s = s.strip()
+    if s.startswith('"') and s.endswith('"'):
+        return Literal(Value(s[1:-1]))
+    if s.isdigit(): return Literal(Value(int(s)))
+    if s.replace('.', '', 1).isdigit() and s.count('.') == 1:
+        return Literal(Value(float(s)))
+    for op in ['+', '-', '*', '/', '==', '!=', '<', '>']:
+        if op in s:
+            left, right = s.split(op, 1)
+            return BinOp(parse_expr(left), op, parse_expr(right))
+    if '(' in s and s.endswith(')'):
+        name, args = s.split('(', 1)
+        args = args[:-1]
+        return Call(name.strip(), [parse_expr(a) for a in args.split(',') if a.strip()])
+    return VarRef(s)
 
-def parse_expr(s):
-    if s.isdigit(): return Expr('Literal', value=Value(int(s)))
-    if s.startswith('"') and s.endswith('"'): return Expr('Literal', value=Value(s[1:-1]))
-    if '+' in s:
-        lhs, rhs = s.split('+', 1)
-        return Expr('BinOp', left=parse_expr(lhs.strip()), op='+', right=parse_expr(rhs.strip()))
-    return Expr('Var', name=s)
+def parse_stmt(line: str) -> Stmt:
+    if line in ('exit', 'quit'): return Exit()
+    if line == 'clear': return Clear()
+    if line == 'help': return Help()
+    if line.startswith('chsh '): return SetShell(line[5:].strip())
+    if line.startswith('sh '): return Shell(line[3:].strip())
+    if line.startswith('py '): return PythonExec(line[3:].strip())
+    if line.startswith('var '):
+        _, rest = line.split('var ', 1)
+        name_type, expr = rest.split('=', 1)
+        name, typ = name_type.split(':', 1)
+        return VarDef(name.strip(), typ.strip(), parse_expr(expr.strip()))
+    if line.startswith('print(') and line.endswith(')'):
+        args = line[6:-1]
+        return Print([parse_expr(a.strip()) for a in args.split(',') if a.strip()])
+    return ExprStmt(parse_expr(line))
 
-def parse_stmt(lines):
-    line = lines[0]
-    if line in ('exit', 'quit'): return Stmt('Exit'), 1
-    if line == 'clear': return Stmt('Clear'), 1
-    if line == 'help': return Stmt('Help'), 1
-    if line.startswith("setshell "): return Stmt('SetShell', shell=line[9:].strip()), 1
-    if line.startswith("var "):
-        _, rest = line.split("var ", 1)
-        name_type, expr = rest.split('=')
-        name, ty = name_type.strip().split(':')
-        return Stmt('VarDef', name=name.strip(), type=parse_type(ty.strip()), expr=parse_expr(expr.strip())), 1
-    if line.startswith("print"):
-        inside = line[line.find('(')+1:line.rfind(')')] if '(' in line else line[5:].strip()
-        args = [parse_expr(a.strip()) for a in inside.split(',')]
-        return Stmt('Print', args=args), 1
-    if line.startswith("shell "): return Stmt('Shell', command=tokenize(line[6:])), 1
-    return Stmt('ExprStmt', expr=parse_expr(line)), 1
-
-def parse_program(src):
-    lines = [line.strip() for line in src.strip().splitlines() if line.strip() and not line.strip().startswith('#')]
-    i, stmts = 0, []
-    while i < len(lines):
-        stmt, used = parse_stmt(lines[i:])
-        stmts.append(stmt)
-        i += used
+def parse_program(src: str) -> List[Stmt]:
+    lines = [l.strip() for l in src.splitlines() if l.strip() and not l.strip().startswith('#')]
+    stmts = []
+    for line in lines:
+        parts = [part.strip() for part in line.split(';') if part.strip()]
+        for part in parts:
+            stmts.append(parse_stmt(part))
     return stmts
 
-def transpile(stmts):
-    py_lines = []
-    for stmt in stmts:
-        if stmt.kind == 'Exit': py_lines.append("exit()")
-        elif stmt.kind == 'Clear': py_lines.append("os.system('clear')")
-        elif stmt.kind == 'Help': py_lines.append("print('Help: var, print, shell, exit')")
-        elif stmt.kind == 'SetShell': py_lines.append(f'shell = "{stmt.shell}"')
-        elif stmt.kind == 'VarDef':
-            val = stmt.expr.value.value if stmt.expr.kind == "Literal" else stmt.expr.name
-            py_lines.append(f'{stmt.name} = {val}')
-        elif stmt.kind == 'Print':
-            items = []
-            for a in stmt.args:
-                if a.kind == 'Literal':
-                    # Add quotes around string literals to keep Python syntax valid
-                    if isinstance(a.value.value, str):
-                        items.append(f'"{a.value.value}"')
-                    else:
-                        items.append(str(a.value.value))
-                else:
-                    items.append(a.name)
-            py_lines.append(f'print({", ".join(items)})')
-        elif stmt.kind == 'Shell':
-            cmd = " ".join(stmt.command)
-            py_lines.append(f'subprocess.run("{cmd}", shell=True)')
-        elif stmt.kind == 'ExprStmt':
-            if stmt.expr.kind == 'BinOp':
-                l = stmt.expr.left.value.value if stmt.expr.left.kind == 'Literal' else stmt.expr.left.name
-                r = stmt.expr.right.value.value if stmt.expr.right.kind == 'Literal' else stmt.expr.right.name
-                py_lines.append(f'{l} {stmt.expr.op} {r}')
-    return "\n".join(py_lines)
+# ===== Type Checker =====
+def type_check_expr(e: Expr, ctx: Context) -> str:
+    if isinstance(e, Literal): return e.value.get_type()
+    if isinstance(e, VarRef): return ctx.types.get(e.name, Type.VOID)
+    if isinstance(e, BinOp):
+        lt = type_check_expr(e.left, ctx)
+        rt = type_check_expr(e.right, ctx)
+        if lt != rt: raise TypeError(f"Type mismatch {lt} {e.op} {rt}")
+        return lt
+    return Type.VOID
 
-def main():
-    if len(sys.argv) < 2:
-        print("Usage: python transpiler.py <scriptfile>")
-        return
-    with open(sys.argv[1]) as f:
-        src = f.read()
+def type_check_stmt(s: Stmt, ctx: Context):
+    if isinstance(s, VarDef):
+        t = type_check_expr(s.expr, ctx)
+        if t != s.typ: raise TypeError(f"Expected {s.typ}, got {t}")
+        ctx.types[s.name] = s.typ
+
+# ===== Executor =====
+def execute_stmt(s: Stmt, ctx: Context):
+    if isinstance(s, Exit): sys.exit(0)
+    if isinstance(s, Clear): os.system('cls' if os.name == 'nt' else 'clear')
+    if isinstance(s, Help):
+        print("DolphinScript Help:\n  var x:type = expr\n  print(expr)\n  sh command\n  py code\n  exit\n  help\n  clear")
+    elif isinstance(s, SetShell): ctx.shell = s.shell
+    elif isinstance(s, Shell): subprocess.call(s.command, shell=True, executable=ctx.shell)
+    elif isinstance(s, PythonExec): exec(s.code, {}, ctx.vars)
+    elif isinstance(s, VarDef):
+        val = eval_expr(s.expr, ctx)
+        ctx.vars[s.name] = val
+    elif isinstance(s, Print):
+        print(' '.join(str(eval_expr(e, ctx).value) for e in s.exprs))
+    elif isinstance(s, ExprStmt): eval_expr(s.expr, ctx)
+
+def eval_expr(e: Expr, ctx: Context) -> Value:
+    if isinstance(e, Literal): return e.value
+    if isinstance(e, VarRef): return ctx.vars.get(e.name, Value(None))
+    if isinstance(e, BinOp):
+        l = eval_expr(e.left, ctx).value
+        r = eval_expr(e.right, ctx).value
+        return Value(eval(f"{repr(l)} {e.op} {repr(r)}"))
+    if isinstance(e, Call):
+        fn = ctx.vars.get(e.name)
+        if callable(fn):
+            args = [eval_expr(a, ctx).value for a in e.args]
+            return Value(fn(*args))
+    return Value(None)
+
+# ===== REPL =====
+def run_repl():
+    print("DolphinScript REPL. Type 'help' for help.")
     ctx = Context()
-    stmts = parse_program(src)
-    code = transpile(stmts)
-    exec_globals = {'os': os, 'subprocess': subprocess, 'exit': exit}
-    exec(code, exec_globals)
+    while True:
+        try:
+            line = input('>>> ').strip()
+            for part in [p.strip() for p in line.split(';') if p.strip()]:
+                stmt = parse_stmt(part)
+                type_check_stmt(stmt, ctx)
+                execute_stmt(stmt, ctx)
+        except Exception as e:
+            print("Error:", e)
 
-main()
+# ===== Main =====
+def main():
+    if len(sys.argv) == 1:
+        run_repl()
+    elif len(sys.argv) == 2 and sys.argv[1].endswith(".dsc"):
+        with open(sys.argv[1]) as f:
+            src = f.read()
+        prog = parse_program(src)
+        ctx = Context()
+        for stmt in prog:
+            type_check_stmt(stmt, ctx)
+            execute_stmt(stmt, ctx)
+    else:
+        print("Usage: dscript.dsc OR run without arguments for REPL")
+
+if __name__ == "__main__":
+    main()

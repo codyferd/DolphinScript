@@ -292,7 +292,9 @@ fn type_check_stmt(stmt: &Stmt, ctx: &mut Context) -> Result<(),String> {
             Ok(())
         }
         Stmt::Print(exprs) => {
-            for e in exprs { let _=type_check_expr(e,ctx)?; }
+            for expr in exprs {
+                type_check_expr(expr, ctx)?;
+            }
             Ok(())
         }
         Stmt::Shell(_) | Stmt::SetShell(_) | Stmt::Exit|Stmt::Clear|Stmt::Help => Ok(()),

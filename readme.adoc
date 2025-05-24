@@ -4,4 +4,4 @@ Version 1.0
 Idea:
 DolphinScript is a statically typed, type-safe, garbage-collected, open source, memory-safe, interpreted programming language that compiles to python, and is designed to be quick and easy to use. Static typing and type safety make sure that errors will be caught, and gives more flexibility with types. Also, here's the Hello World statement.
 
-print("Hello World")
+print(str:"Hello World")

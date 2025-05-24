@@ -39,6 +39,7 @@ class TypedExpr(Expr):
     def __init__(self, typ: str, expr: Expr):
         self.typ = typ
         self.expr = expr
+
 class BinOp(Expr):
     def __init__(self, left: Expr, op: str, right: Expr):
         self.left, self.op, self.right = left, op, right
@@ -71,39 +72,59 @@ class ExprStmt(Stmt):
 # ===== Context =====
 class Context:
     def __init__(self):
-        self.vars: Dict[str, Value] = {}
+        self.vars: Dict[str, Any] = {}
         self.types: Dict[str, str] = {}
         self.shell: str = '/bin/sh'
+
+        # Register built-in 'print' function so calls like print(str:"Hello World") work
+        self.vars['print'] = self.builtin_print
+
+    def builtin_print(self, *args):
+        # Convert all args to string and print separated by spaces
+        print(*args)
+        return None
 
 # ===== Tokenizer =====
 def tokenize(line: str) -> List[str]:
     toks, cur, in_str = [], '', False
     for c in line:
-        if c == '"': in_str = not in_str; cur += c
+        if c == '"':
+            in_str = not in_str
+            cur += c
         elif c.isspace() and not in_str:
-            if cur: toks.append(cur); cur = ''
-        else: cur += c
-    if cur: toks.append(cur)
+            if cur:
+                toks.append(cur)
+                cur = ''
+        else:
+            cur += c
+    if cur:
+        toks.append(cur)
     return toks
 
-# ===== Parser =====
 def parse_expr(s: str) -> Expr:
     s = s.strip()
-    # Detect type annotation: e.g. str:"Hello"
+
+    # Handle binary operations FIRST
+    # Don't break on colon yet
+    for op in ['+', '-', '*', '/', '==', '!=', '<', '>']:
+        parts = s.split(op)
+        if len(parts) == 2:
+            left, right = parts
+            return BinOp(parse_expr(left), op, parse_expr(right))
+
+    # Now handle type annotation
     if ':' in s and not s.startswith('"') and not s[0].isdigit():
         typ, rest = s.split(':', 1)
         if typ in (Type.INT, Type.FLOAT, Type.BOOL, Type.STR, Type.LIST):
             return TypedExpr(typ, parse_expr(rest.strip()))
-    # existing parsing follows
+
+    # Now handle literals and calls
     if s.startswith('"') and s.endswith('"'):
         return Literal(Value(s[1:-1]))
-    if s.isdigit(): return Literal(Value(int(s)))
     if s.replace('.', '', 1).isdigit() and s.count('.') == 1:
         return Literal(Value(float(s)))
-    for op in ['+', '-', '*', '/', '==', '!=', '<', '>']:
-        if op in s:
-            left, right = s.split(op, 1)
-            return BinOp(parse_expr(left), op, parse_expr(right))
+    if s.isdigit():
+        return Literal(Value(int(s)))
     if '(' in s and s.endswith(')'):
         name, args = s.split('(', 1)
         args = args[:-1]
@@ -125,16 +146,20 @@ def parse_stmt(line: str) -> Stmt:
         return PythonExec(line[3:].strip())
     if line.startswith('var '):
         _, rest = line.split('var ', 1)
+        if '=' not in rest:
+            raise SyntaxError("Variable declaration must have '='")
         name_type, expr = rest.split('=', 1)
-        name, typ = name_type.split(':', 1)
-        return VarDef(name.strip(), typ.strip(), parse_expr(expr.strip()))
-    
-    # Modified print parsing to only accept )py or )sh endings
+        name_type = name_type.strip()
+        expr = expr.strip()
+        if ':' in name_type:
+            name, typ = name_type.split(':', 1)
+            return VarDef(name.strip(), typ.strip(), parse_expr(expr))
+        else:
+            name = name_type
+            return VarDef(name.strip(), None, parse_expr(expr))
     if line.startswith('print(') and (line.endswith(')py') or line.endswith(')sh')):
-        # Remove the last 3 chars ')py' or ')sh'
         args = line[6:-3]
         return Print([parse_expr(a.strip()) for a in args.split(',') if a.strip()])
-    
     return ExprStmt(parse_expr(line))
 
 def parse_program(src: str) -> List[Stmt]:
@@ -146,14 +171,11 @@ def parse_program(src: str) -> List[Stmt]:
         # Detect start of multiline py( or sh( block
         if (line.startswith('py(') or line.startswith('sh(')) and not line.endswith(')'):
             cmd = 'py' if line.startswith('py(') else 'sh'
-            # Strip prefix and start collecting code lines
             code_lines = [line[line.index('(')+1:]]
             i += 1
-            # Accumulate lines until we find one ending with ')'
             while i < len(lines) and not lines[i].endswith(')'):
                 code_lines.append(lines[i])
                 i += 1
-            # Add the final line without the trailing ')'
             if i < len(lines):
                 code_lines.append(lines[i][:-1])
             code_block = '\n'.join(code_lines).strip()
@@ -163,7 +185,6 @@ def parse_program(src: str) -> List[Stmt]:
                 stmts.append(Shell(code_block))
             i += 1
             continue
-        # For other lines, parse normally (supports single-line py and sh)
         parts = [part.strip() for part in line.split(';') if part.strip()]
         for part in parts:
             stmts.append(parse_stmt(part))
@@ -178,82 +199,170 @@ def type_check_expr(e: Expr, ctx: Context) -> str:
         if t != expr_t:
             raise TypeError(f"Type annotation {t} does not match expression type {expr_t}")
         return t
-    if isinstance(e, Literal): return e.value.get_type()
-    if isinstance(e, VarRef): return ctx.types.get(e.name, Type.VOID)
+    if isinstance(e, Literal):
+        return e.value.get_type()
+    if isinstance(e, VarRef):
+        return ctx.types.get(e.name, Type.VOID)
     if isinstance(e, BinOp):
         lt = type_check_expr(e.left, ctx)
         rt = type_check_expr(e.right, ctx)
-        if lt != rt: raise TypeError(f"Type mismatch {lt} {e.op} {rt}")
+        if lt != rt:
+            raise TypeError(f"Type mismatch {lt} {e.op} {rt}")
         return lt
     if isinstance(e, Call):
-        # optionally check return type of call
+        # We don't do strict return type check here for simplicity
         return Type.VOID
     return Type.VOID
 
 def type_check_stmt(s: Stmt, ctx: Context):
     if isinstance(s, VarDef):
         t = type_check_expr(s.expr, ctx)
-        if t != s.typ: raise TypeError(f"Expected {s.typ}, got {t}")
+        if t != s.typ:
+            raise TypeError(f"Expected {s.typ}, got {t}")
         ctx.types[s.name] = s.typ
 
 # ===== Executor =====
 def execute_stmt(s: Stmt, ctx: Context):
-    if isinstance(s, Exit): sys.exit(0)
-    if isinstance(s, Clear): os.system('cls' if os.name == 'nt' else 'clear')
+    if isinstance(s, Exit):
+        sys.exit(0)
+    if isinstance(s, Clear):
+        os.system('cls' if os.name == 'nt' else 'clear')
     if isinstance(s, Help):
         print("DolphinScript Help:\n  var x:type = expr\n  print(expr)\n  sh command\n  py code\n  exit\n  help\n  clear")
-    elif isinstance(s, SetShell): ctx.shell = s.shell
-    elif isinstance(s, Shell): subprocess.call(s.command, shell=True, executable=ctx.shell)
-    elif isinstance(s, PythonExec): exec(s.code, {}, ctx.vars)
+    elif isinstance(s, SetShell):
+        ctx.shell = s.shell
+    elif isinstance(s, Shell):
+        subprocess.call(s.command, shell=True, executable=ctx.shell)
+    elif isinstance(s, PythonExec):
+        exec(s.code, {}, ctx.vars)
     elif isinstance(s, VarDef):
         val = eval_expr(s.expr, ctx)
-        ctx.vars[s.name] = val
+        ctx.vars[s.name] = val.value
+        ctx.types[s.name] = s.typ
     elif isinstance(s, Print):
-        print(' '.join(str(eval_expr(e, ctx).value) for e in s.exprs))
-    elif isinstance(s, ExprStmt): eval_expr(s.expr, ctx)
+        out_vals = []
+        for e in s.exprs:
+            val = eval_expr(e, ctx)
+            # Special case: if it's a TypedExpr, unwrap inner expr
+            if isinstance(e, TypedExpr):
+                val = eval_expr(e.expr, ctx)
+            out_vals.append(str(val.value))
+        print(' '.join(out_vals))
+    elif isinstance(s, ExprStmt):
+        eval_expr(s.expr, ctx)
 
 def eval_expr(e: Expr, ctx: Context) -> Value:
-    if isinstance(e, Literal): return e.value
-    if isinstance(e, VarRef): return ctx.vars.get(e.name, Value(None))
-    if isinstance(e, BinOp):
-        l = eval_expr(e.left, ctx).value
-        r = eval_expr(e.right, ctx).value
-        return Value(eval(f"{repr(l)} {e.op} {repr(r)}"))
-    if isinstance(e, Call):
-        fn = ctx.vars.get(e.name)
-        if callable(fn):
-            args = [eval_expr(a, ctx).value for a in e.args]
-            return Value(fn(*args))
-    return Value(None)
+    if isinstance(e, Literal):
+        return e.value
+    if isinstance(e, VarRef):
+        val = ctx.vars.get(e.name)
+        if val is None:
+            return Value(None)
+        if isinstance(val, Value):
+            return val
+        return Value(val)
+    if isinstance(e, TypedExpr):
+        # Evaluate inner expr and cast to specified type
+        val = eval_expr(e.expr, ctx).value
+        try:
+            if e.typ == Type.INT:
+                return Value(int(val))
+            elif e.typ == Type.FLOAT:
+                return Value(float(val))
+            elif e.typ == Type.BOOL:
+                return Value(bool(val))
+            elif e.typ == Type.STR:
+                return Value(str(val))
+            elif e.typ == Type.LIST:
+                if isinstance(val, list):
+                    return Value(val)
+                else:
+                    # Try to make a list if possible
+                    return Value([val])
+            else:
+                return Value(val)
+        except Exception as ex:
+            raise TypeError(f"Cannot convert {val} to {e.typ}: {ex}")
 
-# ===== REPL =====
-def run_repl():
-    print("DolphinScript REPL. Type 'help' for help.")
+    if isinstance(e, BinOp):
+        left = eval_expr(e.left, ctx).value
+        right = eval_expr(e.right, ctx).value
+        try:
+            if e.op == '+':
+                return Value(left + right)
+            elif e.op == '-':
+                return Value(left - right)
+            elif e.op == '*':
+                return Value(left * right)
+            elif e.op == '/':
+                return Value(left / right)
+            elif e.op == '==':
+                return Value(left == right)
+            elif e.op == '!=':
+                return Value(left != right)
+            elif e.op == '<':
+                return Value(left < right)
+            elif e.op == '>':
+                return Value(left > right)
+            else:
+                raise RuntimeError(f"Unknown operator {e.op}")
+        except Exception as ex:
+            raise RuntimeError(f"Error in binary operation {left} {e.op} {right}: {ex}")
+
+    if isinstance(e, Call):
+        func = ctx.vars.get(e.name)
+        if callable(func):
+            args = [eval_expr(arg, ctx).value for arg in e.args]
+            result = func(*args)
+            return Value(result)
+        else:
+            raise RuntimeError(f"Undefined function {e.name}")
+
+    raise RuntimeError(f"Unknown expression {e}")
+
+# ===== Main REPL =====
+def repl():
     ctx = Context()
+    print("Welcome to DolphinScript REPL. Type 'help' for commands.")
     while True:
         try:
             line = input('>>> ').strip()
-            for part in [p.strip() for p in line.split(';') if p.strip()]:
-                stmt = parse_stmt(part)
+            if not line:
+                continue
+            stmts = parse_program(line)
+            for stmt in stmts:
                 type_check_stmt(stmt, ctx)
                 execute_stmt(stmt, ctx)
         except Exception as e:
-            print("Error:", e)
+            print(f"Error: {e}")
 
-# ===== Main =====
 def main():
-    if len(sys.argv) == 1:
-        run_repl()
-    elif len(sys.argv) == 2 and sys.argv[1].endswith(".dsc"):
-        with open(sys.argv[1]) as f:
+    ctx = Context()
+
+    if len(sys.argv) > 1:
+        filename = sys.argv[1]
+        with open(filename, 'r') as f:
             src = f.read()
-        prog = parse_program(src)
-        ctx = Context()
-        for stmt in prog:
+        stmts = parse_program(src)
+        for stmt in stmts:
             type_check_stmt(stmt, ctx)
             execute_stmt(stmt, ctx)
     else:
-        print("Usage: dscript.dsc OR run without arguments for REPL")
+        print("DolphinScript REPL (type 'exit' or 'quit' to exit)")
+        while True:
+            try:
+                line = input('>>> ').strip()
+                if not line:
+                    continue
+                stmts = parse_program(line)
+                for stmt in stmts:
+                    type_check_stmt(stmt, ctx)
+                    execute_stmt(stmt, ctx)
+            except (EOFError, KeyboardInterrupt):
+                print("\nExiting.")
+                break
+            except Exception as e:
+                print(f"Error: {e}")
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

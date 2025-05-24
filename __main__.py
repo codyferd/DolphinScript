@@ -111,35 +111,63 @@ def parse_expr(s: str) -> Expr:
     return VarRef(s)
 
 def parse_stmt(line: str) -> Stmt:
-    if line in ('exit', 'quit'): 
+    if line in ('exit', 'quit'):
         return Exit()
-    if line == 'clear': 
+    if line == 'clear':
         return Clear()
-    if line == 'help': 
+    if line == 'help':
         return Help()
-    if line.startswith('chsh '): 
+    if line.startswith('chsh '):
         return SetShell(line[5:].strip())
-    if line.startswith('sh '): 
+    if line.startswith('sh '):
         return Shell(line[3:].strip())
-    if line.startswith('py '): 
+    if line.startswith('py '):
         return PythonExec(line[3:].strip())
     if line.startswith('var '):
         _, rest = line.split('var ', 1)
         name_type, expr = rest.split('=', 1)
         name, typ = name_type.split(':', 1)
         return VarDef(name.strip(), typ.strip(), parse_expr(expr.strip()))
-    if line.startswith('print(') and line.endswith(')'):
-        args = line[6:-1]
+    
+    # Modified print parsing to only accept )py or )sh endings
+    if line.startswith('print(') and (line.endswith(')py') or line.endswith(')sh')):
+        # Remove the last 3 chars ')py' or ')sh'
+        args = line[6:-3]
         return Print([parse_expr(a.strip()) for a in args.split(',') if a.strip()])
+    
     return ExprStmt(parse_expr(line))
 
 def parse_program(src: str) -> List[Stmt]:
-    lines = [l.strip() for l in src.splitlines() if l.strip() and not l.strip().startswith('#')]
+    lines = [l.rstrip() for l in src.splitlines() if l.strip() and not l.strip().startswith('#')]
     stmts = []
-    for line in lines:
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        # Detect start of multiline py( or sh( block
+        if (line.startswith('py(') or line.startswith('sh(')) and not line.endswith(')'):
+            cmd = 'py' if line.startswith('py(') else 'sh'
+            # Strip prefix and start collecting code lines
+            code_lines = [line[line.index('(')+1:]]
+            i += 1
+            # Accumulate lines until we find one ending with ')'
+            while i < len(lines) and not lines[i].endswith(')'):
+                code_lines.append(lines[i])
+                i += 1
+            # Add the final line without the trailing ')'
+            if i < len(lines):
+                code_lines.append(lines[i][:-1])
+            code_block = '\n'.join(code_lines).strip()
+            if cmd == 'py':
+                stmts.append(PythonExec(code_block))
+            else:
+                stmts.append(Shell(code_block))
+            i += 1
+            continue
+        # For other lines, parse normally (supports single-line py and sh)
         parts = [part.strip() for part in line.split(';') if part.strip()]
         for part in parts:
             stmts.append(parse_stmt(part))
+        i += 1
     return stmts
 
 # ===== Type Checker =====

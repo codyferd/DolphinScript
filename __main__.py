@@ -252,12 +252,15 @@ def execute_stmt(s: Stmt, ctx: Context):
         ctx.vars[s.name] = val.value
         ctx.types[s.name] = s.typ
     elif isinstance(s, Print):
+        # First, ensure all expressions are typed
+        for e in s.exprs:
+            if not isinstance(e, TypedExpr):
+                print("Error: Please use types in print statements")
+                sys.exit(1)  # Or raise TypeError(...)
+    # Now evaluate and print since all passed
         out_vals = []
         for e in s.exprs:
-            val = eval_expr(e, ctx)
-            # Special case: if it's a TypedExpr, unwrap inner expr
-            if isinstance(e, TypedExpr):
-                val = eval_expr(e.expr, ctx)
+            val = eval_expr(e.expr, ctx)
             out_vals.append(str(val.value))
         print(' '.join(out_vals))
     elif isinstance(s, ExprStmt):

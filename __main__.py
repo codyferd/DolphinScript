@@ -125,10 +125,14 @@ def parse_expr(s: str) -> Expr:
         return Literal(Value(float(s)))
     if s.isdigit():
         return Literal(Value(int(s)))
-    if '(' in s and s.endswith(')'):
-        name, args = s.split('(', 1)
-        args = args[:-1]
-        return Call(name.strip(), [parse_expr(a) for a in args.split(',') if a.strip()])
+    if s.endswith(')') and '(' in s:
+        idx = s.find('(')
+        name = s[:idx].strip()
+        args_str = s[idx+1:-1].strip()
+        args = []
+        if args_str:
+            args = [parse_expr(arg.strip()) for arg in args_str.split(',')]
+        return Call(name, args)
     return VarRef(s)
 
 def parse_stmt(line: str) -> Stmt:
@@ -260,73 +264,69 @@ def execute_stmt(s: Stmt, ctx: Context):
         eval_expr(s.expr, ctx)
 
 def eval_expr(e: Expr, ctx: Context) -> Value:
+    # Literal: directly return its Value
     if isinstance(e, Literal):
         return e.value
+
+    # Variable reference: look up in context
     if isinstance(e, VarRef):
-        val = ctx.vars.get(e.name)
-        if val is None:
-            return Value(None)
-        if isinstance(val, Value):
-            return val
-        return Value(val)
+        if e.name in ctx.vars:
+            val = ctx.vars[e.name]
+            return val if isinstance(val, Value) else Value(val)
+        else:
+            raise RuntimeError(f"Undefined variable: {e.name}")
+
+    # Function call: fetch from context and invoke
+    if isinstance(e, Call):
+        if e.name not in ctx.vars:
+            raise RuntimeError(f"Unknown function: {e.name}")
+        func = ctx.vars[e.name]
+        if not callable(func):
+            raise RuntimeError(f"{e.name} is not callable")
+        args = [eval_expr(arg, ctx).value for arg in e.args]
+        result = func(*args)
+        return result if isinstance(result, Value) else Value(result)
+
+    # Typed expression: evaluate inner expr and cast
     if isinstance(e, TypedExpr):
-        # Evaluate inner expr and cast to specified type
-        val = eval_expr(e.expr, ctx).value
+        inner = eval_expr(e.expr, ctx).value
         try:
             if e.typ == Type.INT:
-                return Value(int(val))
-            elif e.typ == Type.FLOAT:
-                return Value(float(val))
-            elif e.typ == Type.BOOL:
-                return Value(bool(val))
-            elif e.typ == Type.STR:
-                return Value(str(val))
-            elif e.typ == Type.LIST:
-                if isinstance(val, list):
-                    return Value(val)
-                else:
-                    # Try to make a list if possible
-                    return Value([val])
-            else:
-                return Value(val)
+                return Value(int(inner))
+            if e.typ == Type.FLOAT:
+                return Value(float(inner))
+            if e.typ == Type.BOOL:
+                return Value(bool(inner))
+            if e.typ == Type.STR:
+                return Value(str(inner))
+            if e.typ == Type.LIST:
+                return Value(inner if isinstance(inner, list) else [inner])
+            return Value(inner)
         except Exception as ex:
-            raise TypeError(f"Cannot convert {val} to {e.typ}: {ex}")
+            raise TypeError(f"Cannot convert {inner} to {e.typ}: {ex}")
 
+    # Binary operation: evaluate operands and apply operator
     if isinstance(e, BinOp):
-        left = eval_expr(e.left, ctx).value
-        right = eval_expr(e.right, ctx).value
+        left_val = eval_expr(e.left, ctx).value
+        right_val = eval_expr(e.right, ctx).value
+        op = e.op
         try:
-            if e.op == '+':
-                return Value(left + right)
-            elif e.op == '-':
-                return Value(left - right)
-            elif e.op == '*':
-                return Value(left * right)
-            elif e.op == '/':
-                return Value(left / right)
-            elif e.op == '==':
-                return Value(left == right)
-            elif e.op == '!=':
-                return Value(left != right)
-            elif e.op == '<':
-                return Value(left < right)
-            elif e.op == '>':
-                return Value(left > right)
-            else:
-                raise RuntimeError(f"Unknown operator {e.op}")
+            if op == '+':    return Value(left_val + right_val)
+            if op == '-':    return Value(left_val - right_val)
+            if op == '*':    return Value(left_val * right_val)
+            if op == '/':    return Value(left_val / right_val)
+            if op == '==':   return Value(left_val == right_val)
+            if op == '!=':   return Value(left_val != right_val)
+            if op == '<':    return Value(left_val < right_val)
+            if op == '<=':   return Value(left_val <= right_val)
+            if op == '>':    return Value(left_val > right_val)
+            if op == '>=':   return Value(left_val >= right_val)
+            raise RuntimeError(f"Unsupported operator: {op}")
         except Exception as ex:
-            raise RuntimeError(f"Error in binary operation {left} {e.op} {right}: {ex}")
+            raise RuntimeError(f"Error in binary operation {left_val} {op} {right_val}: {ex}")
 
-    if isinstance(e, Call):
-        func = ctx.vars.get(e.name)
-        if callable(func):
-            args = [eval_expr(arg, ctx).value for arg in e.args]
-            result = func(*args)
-            return Value(result)
-        else:
-            raise RuntimeError(f"Undefined function {e.name}")
-
-    raise RuntimeError(f"Unknown expression {e}")
+    # Fallback for unknown expressions
+    raise RuntimeError(f"Unknown expression type: {type(e)}")
 
 # ===== Main REPL =====
 def repl():

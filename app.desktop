@@ -1,0 +1,7 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=DolphinScript
+Exec=DolphinScript.bin
+Comment=DolphinScript, a great language.
+Terminal=true

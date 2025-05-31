@@ -168,11 +168,30 @@ def parse_stmt(line: str) -> Stmt:
     return ExprStmt(parse_expr(line))
 
 def parse_program(src: str) -> List[Stmt]:
-    lines = [l.rstrip() for l in src.splitlines() if l.strip() and not l.strip().startswith('#') and not l.strip().startswith('dsd')]
+    lines = src.splitlines()
     stmts = []
     i = 0
     while i < len(lines):
         line = lines[i].strip()
+
+        # === Skip dsd(...)dsd blocks as comments ===
+        # ===== Handle dsd-style comments =====
+        if line.startswith('dsd('):
+            # Multiline dsd(...)dsd block
+            while i < len(lines) and not lines[i].strip().endswith(')dsd'):
+                i += 1
+            i += 1  # Skip the line with ')dsd'
+            continue
+
+        elif line.startswith('dsd '):
+            # Single-line dsd comment: dsd yes "No"
+            i += 1
+            continue
+
+        # === Skip regular comments ===
+        if not line or line.startswith('#'):
+            i += 1
+            continue
 
         # Handle multiline Python block
         if line == 'py(':
@@ -347,11 +366,6 @@ def repl():
                 execute_stmt(stmt, ctx)
         except Exception as e:
             print(f"Error: {e}")
-
-import os
-import sys
-import argparse
-import subprocess
 
 def main():
     parser = argparse.ArgumentParser()

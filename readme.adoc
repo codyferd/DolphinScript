@@ -1,7 +1,6 @@
 = DolphinScript
 Version 1.0
 
-Idea:
-DolphinScript is a type-annotated programming language that compiles to python, and is designed to be quick and easy to use. Type safety makes sure that errors will be caught, and gives more flexibility with types. Also, here's the Hello World statement.
+DolphinScript is a type-annotated programming language that compiles to Python, and is designed to be quick and easy to use. Type safety makes sure that errors will be caught, and gives more flexibility with types. Also, here's the Hello World statement. It comes bundled with DSA, which is the DolphinScript Archive, which is very efficient and executable. It also has built-in support for embedded python, shell, and DSD, which is the DolphinScript Data standard. DSD is a simple, extendable data language with JSON and YAML-like features in a simple package.
 
 print(str:"Hello World")

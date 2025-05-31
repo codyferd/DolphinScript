@@ -1,6 +1,7 @@
 import sys
 import os
 import subprocess
+import argparse
 from typing import Any, Dict, List, Tuple
 
 # ===== Types =====
@@ -167,7 +168,7 @@ def parse_stmt(line: str) -> Stmt:
     return ExprStmt(parse_expr(line))
 
 def parse_program(src: str) -> List[Stmt]:
-    lines = [l.rstrip() for l in src.splitlines() if l.strip() and not l.strip().startswith('#')]
+    lines = [l.rstrip() for l in src.splitlines() if l.strip() and not l.strip().startswith('#') and not l.strip().startswith('dsd')]
     stmts = []
     i = 0
     while i < len(lines):
@@ -347,7 +348,32 @@ def repl():
         except Exception as e:
             print(f"Error: {e}")
 
+import os
+import sys
+import argparse
+import subprocess
+
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--dsa', action='store_true', help='Package this script’s folder using the `dsa` command')
+    args, unknown = parser.parse_known_args()
+
+    if args.dsa:
+        # Get directory of this script
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        folder_name = os.path.basename(script_dir)
+        output_file = os.path.join(script_dir, f"{folder_name}.dsa")
+
+        # Run system `dsa` command to package this directory
+        result = subprocess.run(["./dsa", "a", script_dir, output_file])
+
+        if result.returncode == 0:
+            print(f"Package created: {output_file}")
+        else:
+            print("Error: Failed to create DSA package.")
+        sys.exit(result.returncode)
+
+    # Normal execution (REPL or file)
     ctx = Context()
 
     if len(sys.argv) > 1:

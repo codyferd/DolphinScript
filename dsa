@@ -1,0 +1,135 @@
+#!/bin/sh
+set -eu
+
+usage() {
+  cat <<EOF
+Welcome to the DolphinScript Archiver!
+
+Usage:
+  $0                     Auto-package current dir (default)
+  $0 a DIR OUTPUT [m]   Create archive from DIR
+  $0 x ARCHIVE [DIR]         Extract archive to DIR (default: current dir)
+
+Requirements:
+  main.dsc must exist in the target directory and include:
+    dsd exec <Command>
+EOF
+  exit 1
+}
+
+USE_ZSTD=1
+
+# ── Auto-mode: run with no args → auto-package current dir
+if [ $# -eq 0 ]; then
+  APPDIR="."
+  OUT="$(basename "$(pwd)").dsa"
+  set -- a "$APPDIR" "$OUT"
+fi
+
+# ── Archive Mode ──
+if [ "$1" = "a" ]; then
+  [ $# -ge 3 ] || usage
+  APPDIR=$2
+  OUT=$3
+
+  [ -d "$APPDIR" ] || { echo "Error: '$APPDIR' not found"; exit 1; }
+  DESKTOP="$APPDIR/main.dsc"
+  [ -f "$DESKTOP" ] || { echo "Error: main.dsc missing"; exit 1; }
+
+  NAME=$(grep -m1 '^dsd name ' "$DESKTOP" | sed 's/^dsd name //')
+  EXEC_CMD=$(grep -m1 '^dsd exec ' "$DESKTOP" | sed 's/^dsd exec //')
+  ICON=$(grep -m1 '^dsd icon ' "$DESKTOP" | sed 's/^dsd icon //' || true)
+
+  [ -n "$EXEC_CMD" ] || { echo "Error: dsd exec is required"; exit 1; }
+
+  {
+    # Stub
+    cat <<'EOF'
+#!/bin/sh
+set -eu
+
+SELF="$0"
+MARK="__ARCHIVE_BELOW__"
+L=$(sed -n "/^$MARK$/=" "$SELF" | head -n1)
+[ -n "$L" ] || { echo "Corrupt package: marker missing"; exit 1; }
+SKIP=$((L + 1))
+
+TMPDIR=${TMPDIR:-/tmp}/unixpkg.$$
+mkdir -p "$TMPDIR"
+trap 'rm -rf "$TMPDIR"' EXIT INT TERM
+
+tail -n +$SKIP "$SELF" > "$TMPDIR/archive.dat"
+
+HEAD=$(head -n1 "$TMPDIR/archive.dat")
+tail -n +2 "$TMPDIR/archive.dat" > "$TMPDIR/archive.tar"
+
+if [ "$HEAD" = "__USE_ZSTD__" ]; then
+  zstd -d < "$TMPDIR/archive.tar" | tar -xf - -C "$TMPDIR"
+else
+  tar -xf "$TMPDIR/archive.tar" -C "$TMPDIR"
+fi
+
+cd "$TMPDIR"
+CMD=$(sed -n 's/^dsd exec //p' main.dsc | head -n1)
+
+if [ $# -eq 0 ]; then
+  exec sh -c "$CMD"
+else
+  FIRST_ARG="$1"
+  ABS_PATH=$(realpath -- "$FIRST_ARG" 2>/dev/null || echo "")
+
+  if [ -n "$ABS_PATH" ] && [ -f "$ABS_PATH" ] && ! echo "$ABS_PATH" | grep -q "^$TMPDIR"; then
+    exec sh -c "$CMD \"$@\""
+  else
+    exec sh -c "$CMD"
+  fi
+fi
+
+__ARCHIVE_BELOW__
+EOF
+
+    # Payload
+    if [ "$USE_ZSTD" -eq 1 ]; then
+      echo "__USE_ZSTD__"
+      tar -C "$APPDIR" -cf - . | zstd -19 --stdout
+    else
+      tar -C "$APPDIR" -cf - .
+    fi
+  } > "$OUT"
+
+  chmod +x "$OUT"
+  echo "Package created: $OUT"
+  exit 0
+fi
+
+# ── Extract Mode ──
+if [ "$1" = "x" ]; then
+  [ $# -ge 2 ] || usage
+  PKG="$2"
+  OUTDIR="${3:-.}"
+
+  [ -f "$PKG" ] || { echo "Error: archive '$PKG' not found"; exit 1; }
+
+  MARK="__ARCHIVE_BELOW__"
+  LINE=$(grep -an "^$MARK\$" "$PKG" | cut -d: -f1 | head -n1)
+  [ -n "$LINE" ] || { echo "Marker not found"; exit 1; }
+
+  SKIP=$((LINE + 1))
+  TMPFILE=$(mktemp)
+
+  tail -n +$SKIP "$PKG" > "$TMPFILE"
+  HEADER=$(head -n1 "$TMPFILE")
+
+  mkdir -p "$OUTDIR"
+  if [ "$HEADER" = "__USE_ZSTD__" ]; then
+    tail -n +2 "$TMPFILE" | zstd -d | tar -xf - -C "$OUTDIR"
+  else
+    tar -xf "$TMPFILE" -C "$OUTDIR"
+  fi
+
+  rm -f "$TMPFILE"
+  echo "Extracted to: $OUTDIR"
+  exit 0
+fi
+
+usage

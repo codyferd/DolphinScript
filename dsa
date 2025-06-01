@@ -135,7 +135,7 @@ if [ $# -eq 0 ]; then
   exec sh -c "$CMD"
 else
   FIRST_ARG="$1"
-  ABS=$(command -v realpath >/dev/null 2>&1 && realpath -- "$FIRST_ARG" || echo "")
+  ABS=$(readlink -f -- "$FIRST_ARG" 2>/dev/null || echo "")
   if [ -n "$ABS" ] && [ -f "$ABS" ] && ! echo "$ABS" | grep -q "^$TMPDIR"; then
     exec sh -c "$CMD \"$@\""
   else

@@ -3,133 +3,162 @@ set -eu
 
 usage() {
   cat <<EOF
-Welcome to the DolphinScript Archiver!
-
 Usage:
-  $0                     Auto-package current dir (default)
-  $0 a DIR OUTPUT [m]   Create archive from DIR
-  $0 x ARCHIVE [DIR]         Extract archive to DIR (default: current dir)
+  dsa [n] [m] [l]
+  dsa x <archive.dsa> [<outdir>]
 
-Requirements:
-  main.dsc must exist in the target directory and include:
-    dsd exec str; "<Command>"
+Modes:
+  (no args)    Create executable .dsa with auto execution (requires main.dsc).
+  n            Create non-executable .dsa archive (stub does NOT auto-run).
+  x <file>     Extract .dsa archive.
+
+Flags (only after n or none):
+  m            No compression (raw tar inside .dsa).
+  l            Low compression (zstd -1 instead of -19).
+
+Examples:
+  dsa
+  dsa n m
+  dsa x archive.dsa /outdir
 EOF
   exit 1
 }
 
-USE_ZSTD=1
+MODE="exe"
+COMPRESS=1
+ZSTD_LEVEL=19
 
-# ── Auto-mode: run with no args → auto-package current dir
-if [ $# -eq 0 ]; then
-  APPDIR="."
-  OUT="$(basename "$(pwd)").dsa"
-  set -- a "$APPDIR" "$OUT"
+# Parse mode (only first argument)
+if [ $# -gt 0 ]; then
+  case "$1" in
+    x)
+      # Extract mode
+      if [ $# -lt 2 ] || [ $# -gt 3 ]; then usage; fi
+      ARCHIVE="$2"
+      OUTDIR="${3:-.}"
+      [ -f "$ARCHIVE" ] || { echo "Error: '$ARCHIVE' not found"; exit 1; }
+
+      MARK="__ARCHIVE_BELOW__"
+      LINE=$(grep -an "^$MARK\$" "$ARCHIVE" | cut -d: -f1 | head -n1)
+      [ -n "$LINE" ] || { echo "Error: marker missing"; exit 1; }
+      SKIP=$((LINE + 1))
+
+      TMPFILE=$(mktemp)
+      tail -n +$SKIP "$ARCHIVE" > "$TMPFILE"
+      HEADER=$(head -n1 "$TMPFILE")
+
+      mkdir -p "$OUTDIR"
+      if [ "$HEADER" = "__USE_ZSTD__" ]; then
+        tail -n +2 "$TMPFILE" | zstd -d | tar -xf - -C "$OUTDIR"
+      else
+        tar -xf "$TMPFILE" -C "$OUTDIR"
+      fi
+      rm -f "$TMPFILE"
+      echo "Extracted to: $OUTDIR"
+      exit 0
+      ;;
+    n)
+      MODE="nonexe"
+      shift
+      ;;
+    *)
+      # If first arg is a flag, treat as exe mode flags
+      ;;
+  esac
 fi
 
-# ── Archive Mode ──
-if [ "$1" = "a" ]; then
-  [ $# -ge 3 ] || usage
-  APPDIR=$2
-  OUT=$3
+# Parse flags m or l (after shifting n)
+while [ $# -gt 0 ]; do
+  case "$1" in
+    m) COMPRESS=0 ;;
+    l) ZSTD_LEVEL=1 ;;
+    n) ;; # Already handled
+    *) usage ;;
+  esac
+  shift
+done
 
-  [ -d "$APPDIR" ] || { echo "Error: '$APPDIR' not found"; exit 1; }
-  DESKTOP="$APPDIR/main.dsc"
-  [ -f "$DESKTOP" ] || { echo "Error: main.dsc missing"; exit 1; }
+APPDIR="."
+BASE=$(basename "$(pwd)")
+OUT="${BASE}.dsa"
 
-  NAME=$(grep -m1 '^dsd name str;' "$DESKTOP" | sed 's/^dsd name str; //')
-  EXEC_CMD=$(grep -m1 '^dsd exec str;' "$DESKTOP" | sed 's/^dsd exec str; //')
-  ICON=$(grep -m1 '^dsd icon str;' "$DESKTOP" | sed 's/^dsd icon str; //' || true)
+if [ "$MODE" = "exe" ]; then
+  [ -f "./main.dsc" ] || { echo "Error: main.dsc missing"; exit 1; }
+fi
 
-  [ -n "$EXEC_CMD" ] || { echo "Error: dsd exec str; is required"; exit 1; }
-
-  {
-    # Stub
-    cat <<'EOF'
+# Create the DSA archive (stub + payload)
+{
+  cat <<'EOF'
 #!/bin/sh
 set -eu
 
 SELF="$0"
 MARK="__ARCHIVE_BELOW__"
-L=$(sed -n "/^$MARK$/=" "$SELF" | head -n1)
-[ -n "$L" ] || { echo "Corrupt package: marker missing"; exit 1; }
-SKIP=$((L + 1))
+LINE=$(grep -an "^$MARK\$" "$SELF" | cut -d: -f1 | head -n1)
+if [ -z "$LINE" ]; then
+  echo "Error: corrupt archive (marker missing)"
+  exit 1
+fi
+SKIP=$((LINE + 1))
 
-TMPDIR=${TMPDIR:-/tmp}/unixpkg.$$
+TMPDIR="${TMPDIR:-/tmp}/dsa.$$"
 mkdir -p "$TMPDIR"
 trap 'rm -rf "$TMPDIR"' EXIT INT TERM
 
 tail -n +$SKIP "$SELF" > "$TMPDIR/archive.dat"
 
-HEAD=$(head -n1 "$TMPDIR/archive.dat")
+HEADER=$(head -n1 "$TMPDIR/archive.dat")
 tail -n +2 "$TMPDIR/archive.dat" > "$TMPDIR/archive.tar"
 
-if [ "$HEAD" = "__USE_ZSTD__" ]; then
+if [ "$HEADER" = "__USE_ZSTD__" ]; then
   zstd -d < "$TMPDIR/archive.tar" | tar -xf - -C "$TMPDIR"
 else
   tar -xf "$TMPDIR/archive.tar" -C "$TMPDIR"
 fi
 
+# Fix permissions (make sure main.dsc is readable)
+chmod -R u+rw "$TMPDIR"
+
+EOF
+
+  if [ "$MODE" = "exe" ]; then
+    cat <<'EOF'
 cd "$TMPDIR"
-CMD=$(sed -n 's/^dsd exec str; //p' main.dsc | head -n1 | sed 's/^"//; s/"$//')
+CMD=$(grep '^dsd exec str; ' main.dsc | head -n1 | cut -d'"' -f2)
+
+if [ -z "$CMD" ]; then
+  echo "Error: No execution command found in main.dsc"
+  exit 1
+fi
 
 if [ $# -eq 0 ]; then
   exec sh -c "$CMD"
 else
   FIRST_ARG="$1"
-  ABS_PATH=$(realpath -- "$FIRST_ARG" 2>/dev/null || echo "")
-
-  if [ -n "$ABS_PATH" ] && [ -f "$ABS_PATH" ] && ! echo "$ABS_PATH" | grep -q "^$TMPDIR"; then
+  ABS=$(command -v realpath >/dev/null 2>&1 && realpath -- "$FIRST_ARG" || echo "")
+  if [ -n "$ABS" ] && [ -f "$ABS" ] && ! echo "$ABS" | grep -q "^$TMPDIR"; then
     exec sh -c "$CMD \"$@\""
   else
     exec sh -c "$CMD"
   fi
 fi
-
-__ARCHIVE_BELOW__
 EOF
-
-    # Payload
-    if [ "$USE_ZSTD" -eq 1 ]; then
-      echo "__USE_ZSTD__"
-      tar -C "$APPDIR" -cf - . | zstd -19 --stdout
-    else
-      tar -C "$APPDIR" -cf - .
-    fi
-  } > "$OUT"
-
-  chmod +x "$OUT"
-  echo "Package created: $OUT"
-  exit 0
-fi
-
-# ── Extract Mode ──
-if [ "$1" = "x" ]; then
-  [ $# -ge 2 ] || usage
-  PKG="$2"
-  OUTDIR="${3:-.}"
-
-  [ -f "$PKG" ] || { echo "Error: archive '$PKG' not found"; exit 1; }
-
-  MARK="__ARCHIVE_BELOW__"
-  LINE=$(grep -an "^$MARK\$" "$PKG" | cut -d: -f1 | head -n1)
-  [ -n "$LINE" ] || { echo "Marker not found"; exit 1; }
-
-  SKIP=$((LINE + 1))
-  TMPFILE=$(mktemp)
-
-  tail -n +$SKIP "$PKG" > "$TMPFILE"
-  HEADER=$(head -n1 "$TMPFILE")
-
-  mkdir -p "$OUTDIR"
-  if [ "$HEADER" = "__USE_ZSTD__" ]; then
-    tail -n +2 "$TMPFILE" | zstd -d | tar -xf - -C "$OUTDIR"
   else
-    tar -xf "$TMPFILE" -C "$OUTDIR"
+    # Non-executable mode: no auto execution
+    echo "# Non-executable mode: no auto execution"
   fi
 
-  rm -f "$TMPFILE"
-  echo "Extracted to: $OUTDIR"
-  exit 0
-fi
+  echo "__ARCHIVE_BELOW__"
 
-usage
+  # Payload archive
+  if [ "$COMPRESS" -eq 0 ]; then
+    tar --exclude="$OUT" -cf - -C "$APPDIR" .
+  else
+    echo "__USE_ZSTD__"
+    tar --exclude="$OUT" -cf - -C "$APPDIR" . | zstd -${ZSTD_LEVEL} --stdout
+  fi
+} > "$OUT"
+
+chmod +x "$OUT"
+echo "Created: $OUT"
+exit 0

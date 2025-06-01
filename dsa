@@ -135,7 +135,10 @@ if [ $# -eq 0 ]; then
   exec sh -c "$CMD"
 else
   FIRST_ARG="$1"
-  ABS=$(readlink -f -- "$FIRST_ARG" 2>/dev/null || echo "")
+  case "$FIRST_ARG" in
+    /*) ABS="$FIRST_ARG" ;;
+    *) ABS="$(cd "$(dirname "$FIRST_ARG")" && pwd)/$(basename "$FIRST_ARG")" ;;
+  esac
   if [ -n "$ABS" ] && [ -f "$ABS" ] && ! echo "$ABS" | grep -q "^$TMPDIR"; then
     exec sh -c "$CMD \"$@\""
   else

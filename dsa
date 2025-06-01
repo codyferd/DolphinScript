@@ -12,7 +12,7 @@ Usage:
 
 Requirements:
   main.dsc must exist in the target directory and include:
-    dsd exec <Command>
+    dsd exec str; "<Command>"
 EOF
   exit 1
 }
@@ -36,11 +36,11 @@ if [ "$1" = "a" ]; then
   DESKTOP="$APPDIR/main.dsc"
   [ -f "$DESKTOP" ] || { echo "Error: main.dsc missing"; exit 1; }
 
-  NAME=$(grep -m1 '^dsd name ' "$DESKTOP" | sed 's/^dsd name //')
-  EXEC_CMD=$(grep -m1 '^dsd exec ' "$DESKTOP" | sed 's/^dsd exec //')
-  ICON=$(grep -m1 '^dsd icon ' "$DESKTOP" | sed 's/^dsd icon //' || true)
+  NAME=$(grep -m1 '^dsd name str;' "$DESKTOP" | sed 's/^dsd name str; //')
+  EXEC_CMD=$(grep -m1 '^dsd exec str;' "$DESKTOP" | sed 's/^dsd exec str; //')
+  ICON=$(grep -m1 '^dsd icon str;' "$DESKTOP" | sed 's/^dsd icon str; //' || true)
 
-  [ -n "$EXEC_CMD" ] || { echo "Error: dsd exec is required"; exit 1; }
+  [ -n "$EXEC_CMD" ] || { echo "Error: dsd exec str; is required"; exit 1; }
 
   {
     # Stub
@@ -70,7 +70,7 @@ else
 fi
 
 cd "$TMPDIR"
-CMD=$(sed -n 's/^dsd exec //p' main.dsc | head -n1)
+CMD=$(sed -n 's/^dsd exec str; //p' main.dsc | head -n1 | sed 's/^"//; s/"$//')
 
 if [ $# -eq 0 ]; then
   exec sh -c "$CMD"

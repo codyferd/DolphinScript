@@ -1,4 +1,4 @@
-dsd exec python3 __main__.py
+dsd exec str; "python3 __main__.py"
 dsd(
 class: str;
   first_name "John"
@@ -19,3 +19,4 @@ children list: str;
   "Trevor"
 spouse void;
 )dsd
+print(str:"Hello World:")

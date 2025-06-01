@@ -28,25 +28,28 @@ MODE="exe"
 COMPRESS=1
 ZSTD_LEVEL=19
 
-# Parse mode (only first argument)
+# Parse mode (first argument)
 if [ $# -gt 0 ]; then
   case "$1" in
     x)
-      # Extract mode
-      if [ $# -lt 2 ] || [ $# -gt 3 ]; then usage; fi
+      [ $# -ge 2 ] && [ $# -le 3 ] || usage
       ARCHIVE="$2"
       OUTDIR="${3:-.}"
       [ -f "$ARCHIVE" ] || { echo "Error: '$ARCHIVE' not found"; exit 1; }
 
-      MARK="__ARCHIVE_BELOW__"
-      LINE=$(grep -an "^$MARK\$" "$ARCHIVE" | cut -d: -f1 | head -n1)
-      [ -n "$LINE" ] || { echo "Error: marker missing"; exit 1; }
-      SKIP=$((LINE + 1))
+      # Find the line number of the marker
+      LINE_NUM=0
+      while IFS= read -r LINE; do
+        LINE_NUM=$((LINE_NUM + 1))
+        [ "$LINE" = "__ARCHIVE_BELOW__" ] && break
+      done < "$ARCHIVE"
+      [ "$LINE" != "__ARCHIVE_BELOW__" ] && { echo "Error: marker missing"; exit 1; }
 
+      SKIP=$((LINE_NUM + 1))
       TMPFILE=$(mktemp)
-      tail -n +$SKIP "$ARCHIVE" > "$TMPFILE"
-      HEADER=$(head -n1 "$TMPFILE")
+      tail -n +"$SKIP" "$ARCHIVE" > "$TMPFILE"
 
+      read -r HEADER < "$TMPFILE"
       mkdir -p "$OUTDIR"
       if [ "$HEADER" = "__USE_ZSTD__" ]; then
         tail -n +2 "$TMPFILE" | zstd -d | tar -xf - -C "$OUTDIR"
@@ -61,18 +64,15 @@ if [ $# -gt 0 ]; then
       MODE="nonexe"
       shift
       ;;
-    *)
-      # If first arg is a flag, treat as exe mode flags
-      ;;
   esac
 fi
 
-# Parse flags m or l (after shifting n)
+# Parse flags
 while [ $# -gt 0 ]; do
   case "$1" in
     m) COMPRESS=0 ;;
     l) ZSTD_LEVEL=1 ;;
-    n) ;; # Already handled
+    n) ;; # already handled
     *) usage ;;
   esac
   shift
@@ -82,31 +82,27 @@ APPDIR="."
 BASE=$(basename "$(pwd)")
 OUT="${BASE}.dsa"
 
-if [ "$MODE" = "exe" ]; then
-  [ -f "./main.dsc" ] || { echo "Error: main.dsc missing"; exit 1; }
-fi
+[ "$MODE" = "exe" ] && [ ! -f "./main.dsc" ] && { echo "Error: main.dsc missing"; exit 1; }
 
-# Create the DSA archive (stub + payload)
 {
   cat <<'EOF'
 #!/bin/sh
 set -eu
 
 SELF="$0"
-MARK="__ARCHIVE_BELOW__"
-LINE=$(grep -an "^$MARK\$" "$SELF" | cut -d: -f1 | head -n1)
-if [ -z "$LINE" ]; then
-  echo "Error: corrupt archive (marker missing)"
-  exit 1
-fi
-SKIP=$((LINE + 1))
+LINE_NUM=0
+while IFS= read -r LINE; do
+  LINE_NUM=$((LINE_NUM + 1))
+  [ "$LINE" = "__ARCHIVE_BELOW__" ] && break
+done < "$SELF"
+[ "$LINE" != "__ARCHIVE_BELOW__" ] && { echo "Error: corrupt archive (marker missing)"; exit 1; }
 
+SKIP=$((LINE_NUM + 1))
 TMPDIR="${TMPDIR:-/tmp}/dsa.$$"
 mkdir -p "$TMPDIR"
 trap 'rm -rf "$TMPDIR"' EXIT INT TERM
 
-tail -n +$SKIP "$SELF" > "$TMPDIR/archive.dat"
-
+tail -n +"$SKIP" "$SELF" > "$TMPDIR/archive.dat"
 HEADER=$(head -n1 "$TMPDIR/archive.dat")
 tail -n +2 "$TMPDIR/archive.dat" > "$TMPDIR/archive.tar"
 
@@ -116,20 +112,20 @@ else
   tar -xf "$TMPDIR/archive.tar" -C "$TMPDIR"
 fi
 
-# Fix permissions (make sure main.dsc is readable)
 chmod -R u+rw "$TMPDIR"
-
 EOF
 
   if [ "$MODE" = "exe" ]; then
     cat <<'EOF'
 cd "$TMPDIR"
-CMD=$(grep '^dsd exec str; ' main.dsc | head -n1 | cut -d'"' -f2)
+CMD=""
+while IFS= read -r LINE; do
+  case "$LINE" in
+    dsd\ exec\ str\;\ \"*\") CMD="${LINE#*\"}"; CMD="${CMD%%\"*}"; break ;;
+  esac
+done < main.dsc
 
-if [ -z "$CMD" ]; then
-  echo "Error: No execution command found in main.dsc"
-  exit 1
-fi
+[ -z "$CMD" ] && { echo "Error: No execution command found in main.dsc"; exit 1; }
 
 if [ $# -eq 0 ]; then
   exec sh -c "$CMD"
@@ -139,21 +135,26 @@ else
     /*) ABS="$FIRST_ARG" ;;
     *) ABS="$(cd "$(dirname "$FIRST_ARG")" && pwd)/$(basename "$FIRST_ARG")" ;;
   esac
-  if [ -n "$ABS" ] && [ -f "$ABS" ] && ! echo "$ABS" | grep -q "^$TMPDIR"; then
+
+  case "$ABS" in
+    "$TMPDIR"/*) INSIDE_TMPDIR=true ;;
+    *) INSIDE_TMPDIR=false ;;
+  esac
+
+  if [ -n "$ABS" ] && [ -f "$ABS" ] && [ "$INSIDE_TMPDIR" = false ]; then
     exec sh -c "$CMD \"$@\""
   else
     exec sh -c "$CMD"
   fi
 fi
+
 EOF
   else
-    # Non-executable mode: no auto execution
     echo "# Non-executable mode: no auto execution"
   fi
 
   echo "__ARCHIVE_BELOW__"
 
-  # Payload archive
   if [ "$COMPRESS" -eq 0 ]; then
     tar --exclude="$OUT" -cf - -C "$APPDIR" .
   else
